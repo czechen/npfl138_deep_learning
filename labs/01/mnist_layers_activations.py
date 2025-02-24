@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#!/home/czechen/Projects/Deep_Learning/NPFL/bin/python3
+
 import argparse
 import datetime
 import os
@@ -22,6 +23,9 @@ parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 # If you add more arguments, ReCodEx will keep them with your default values.
 
+class Identity(torch.nn.Module):
+    def forward(self, x):
+        return x
 
 class Dataset(npfl138.TransformedDataset):
     def transform(self, example):
@@ -50,16 +54,23 @@ def main(args: argparse.Namespace) -> dict[str, float]:
     dev = torch.utils.data.DataLoader(Dataset(mnist.dev), batch_size=args.batch_size)
 
     # Create the model.
-    model = torch.nn.Sequential()
-
     # TODO: Finish the model. Namely:
     # - start by adding the `torch.nn.Flatten()` layer;
     # - then add `args.hidden_layers` number of fully connected hidden layers
     #   `torch.nn.Linear()`, each with `args.hidden_layer_size` neurons and followed by
     #   a specified `args.activation`, allowing "none", "relu", "tanh", "sigmoid";
     # - finally, add an output fully connected layer with `MNIST.LABELS` units.
-    ...
 
+    if args.hidden_layers == 0:
+        modules = [torch.nn.Flatten(),torch.nn.Linear(MNIST.C * MNIST.H * MNIST.W, MNIST.LABELS)]
+    else:
+        activations = {'none':Identity(),'relu':torch.nn.ReLU(),'tanh':torch.nn.Tanh(),'sigmoid':torch.nn.Sigmoid()}
+        modules = [torch.nn.Flatten(),torch.nn.Linear(MNIST.C * MNIST.H * MNIST.W, args.hidden_layer_size),activations[args.activation]]
+        for i in range(args.hidden_layers-1):
+            modules.append(torch.nn.Linear(args.hidden_layer_size,args.hidden_layer_size))
+            modules.append(activations[args.activation])
+        modules.append(torch.nn.Linear(args.hidden_layer_size,MNIST.LABELS))
+    model = torch.nn.Sequential(*modules)
     # Create the TrainableModule and configure it for training.
     model = npfl138.TrainableModule(model)
 
