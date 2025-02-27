@@ -54,11 +54,16 @@ def main(args: argparse.Namespace) -> tuple[float, float, float]:
 
     # TODO: Compute cross-entropy H(data distribution, model distribution).
     # When some data distribution elements are missing in the model distribution,
+<<<<<<< HEAD
     # return `np.inf`.
     if data_distribution.shape != model_distribution.shape:
         crossentropy = np.inf
     else:
         crossentropy = -np.sum(data_distribution*np.log(model_distribution))
+=======
+    # the resulting crossentropy should be `np.inf`.
+    crossentropy = ...
+>>>>>>> c4a45778017cd56a7b44670b163d21bb0d36d4db
 
     # TODO: Compute KL-divergence D_KL(data distribution, model_distribution),
     # again using `np.inf` when needed.
