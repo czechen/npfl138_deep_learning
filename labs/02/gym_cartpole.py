@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/czechen/Projects/Deep_Learning/NPFL/bin/python3
 import argparse
 import datetime
 import os
@@ -20,8 +20,8 @@ parser.add_argument("--render", default=False, action="store_true", help="Render
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 # If you add more arguments, ReCodEx will keep them with your default values.
-parser.add_argument("--batch_size", default=..., type=int, help="Batch size.")
-parser.add_argument("--epochs", default=..., type=int, help="Number of epochs.")
+parser.add_argument("--batch_size", default=10, type=int, help="Batch size.")
+parser.add_argument("--epochs", default=20, type=int, help="Number of epochs.")
 parser.add_argument("--model", default="gym_cartpole_model.pt", type=str, help="Output model path.")
 
 
@@ -60,16 +60,21 @@ def evaluate_model(
 class Model(npfl138.TrainableModule):
     def __init__(self, args: argparse.Namespace) -> None:
         super().__init__()
-
+        hidden_layer_size = 3
         # TODO: Create the model layers, with the last layer having 2 outputs.
         # To store a list of layers, you can use either `torch.nn.Sequential`
         # or `torch.nn.ModuleList`; you should *not* use a Python list.
-        ...
+        self.layers = torch.nn.Sequential(torch.nn.Linear(GymCartpoleDataset.FEATURES,hidden_layer_size),
+                                    torch.nn.Tanh(),
+                                    #torch.nn.Linear(hidden_layer_size,hidden_layer_size),
+                                    #torch.nn.Tanh(),
+                                    torch.nn.Linear(hidden_layer_size,2))
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         # TODO: Run your model. Because some inputs are on a CPU, you should
         # start by moving them to the `self.device`.
-        ...
+        #inputs = inputs.to(self.layers)
+        return self.layers(inputs)
 
 
 def main(args: argparse.Namespace) -> torch.nn.Module | None:
@@ -95,13 +100,20 @@ def main(args: argparse.Namespace) -> torch.nn.Module | None:
         # - `inputs` is a vector with `GymCartpoleDataset.FEATURES` floating point values,
         # - `label` is a gold 0/1 class index.
         dataset = GymCartpoleDataset()
-
+        
         train = torch.utils.data.DataLoader(dataset.train, args.batch_size, shuffle=True)
-
         model = Model(args)
+        _optimizer = torch.optim.AdamW(model.parameters(),lr=0.01,weight_decay=0.01)
+
+        _scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(_optimizer,T_max=args.epochs*len(train),eta_min = 0.0001)
 
         # TODO: Configure the model for training.
-        model.configure(...)
+        model.configure(
+            optimizer=_optimizer,
+            scheduler=_scheduler,
+            loss=torch.nn.CrossEntropyLoss(),
+            logdir=args.logdir,
+        )
 
         # TODO: Train the model. Note that you can pass a list of callbacks to the
         # `fit` method, each being a callable accepting the model, epoch, and logs.

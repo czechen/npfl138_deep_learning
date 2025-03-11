@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#!/home/czechen/Projects/Deep_Learning/NPFL/bin/python3
+
 import argparse
 import datetime
 import os
@@ -84,11 +85,27 @@ def main(args: argparse.Namespace) -> dict[str, float]:
     #   learning rate to the console and to TensorBoard. Additionally, you can find out
     #   the next learning rate to be used by printing `model.scheduler.get_last_lr()[0]`.
     #   Therefore, after the training, this value should be `args.learning_rate_final`.
-    ...
+    if args.optimizer == 'SGD':
+        if args.momentum:
+            _optimizer = torch.optim.SGD(model.parameters(),lr=args.learning_rate,momentum = args.momentum,nesterov=True)
+        else:
+            _optimizer = torch.optim.SGD(model.parameters(),lr=args.learning_rate)
+    else:
+        _optimizer = torch.optim.Adam(model.parameters(),lr=args.learning_rate)
+    num_of_steps = len(train)*args.epochs
+    if args.decay == 'linear':
+        _scheduler = torch.optim.lr_scheduler.LinearLR(_optimizer,start_factor=1.0,end_factor=args.learning_rate_final/args.learning_rate,total_iters=args.epochs*len(train))
+    elif args.decay == 'exponential':
+        _gamma = torch.pow(torch.tensor(args.learning_rate_final,dtype=torch.float64)/torch.tensor(args.learning_rate,dtype=torch.float64),1/torch.tensor((args.epochs*len(train)),dtype=torch.float64))        
+        _scheduler = torch.optim.lr_scheduler.ExponentialLR(_optimizer,gamma=_gamma)
+    elif args.decay == 'cosine':
+        _scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(_optimizer,T_max=args.epochs*len(train),eta_min = args.learning_rate_final)
+    else:
+        _scheduler = None
 
     model.configure(
-        optimizer=...,
-        scheduler=...,
+        optimizer=_optimizer,
+        scheduler=_scheduler,
         loss=torch.nn.CrossEntropyLoss(),
         metrics={"accuracy": torchmetrics.Accuracy("multiclass", num_classes=MNIST.LABELS)},
         logdir=args.logdir,
