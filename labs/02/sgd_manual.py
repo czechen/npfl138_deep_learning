@@ -1,4 +1,5 @@
 #!/home/czechen/Projects/Deep_Learning/NPFL/bin/python3
+
 import argparse
 import datetime
 import os
@@ -60,7 +61,7 @@ class Model(torch.nn.Module):
         inputs = inputs.reshape(inputs.shape[0],-1)
         hidden_values = torch.tanh(inputs@self._W1 + self._b1)
         output_values = hidden_values@self._W2+self._b2
-        return inputs, hidden_values,output_values
+        return inputs, hidden_values, output_values
 
     def train_epoch(self, dataset: MNIST.Dataset) -> None:
         self.train()
@@ -88,6 +89,7 @@ class Model(torch.nn.Module):
 
             # TODO(sgd_backpropagation): Compute the probabilities of the batch images using `torch.softmax`.
             probabilities = torch.softmax(logits,dim=1)
+            
 
             # TODO: Compute the gradient of the loss with respect to all
             # parameters. The loss is computed as in `sgd_backpropagation`.
@@ -98,10 +100,23 @@ class Model(torch.nn.Module):
             # which you can achieve by using for example
             #   `A[:, :, torch.newaxis] * B[:, torch.newaxis, :]`
             # or with
-            #   `torch.einsum("bi,bj->bij", A, B)`.
+            #   `torch.einsum("bi,bj->bij", A, B)`. 
+            labels_one_hot =  torch.nn.functional.one_hot(labels.to(torch.int64),10)
+            logit_grad = probabilities - labels_one_hot
+            b2_grad = logit_grad
+            W2_grad = logit_grad[:,torch.newaxis,]*hidden[:,:,torch.newaxis]
+
+            hidden_grad = (logit_grad@ torch.transpose(self._W2,0,1))*(1-hidden**2)
+            b1_grad = hidden_grad
+            W1_grad = hidden_grad[:,torch.newaxis,]*inputs[:,:,torch.newaxis]
 
             # TODO: Perform the SGD update with learning rate `self._args.learning_rate`
             # for all model parameters.
+            with torch.no_grad():
+                self._b1 -= self._args.learning_rate*(torch.mean(b1_grad,0,False))
+                self._b2 -= self._args.learning_rate*(torch.mean(b2_grad,0,False))
+                self._W1 -= self._args.learning_rate*(torch.mean(W1_grad,0,False))
+                self._W2 -= self._args.learning_rate*(torch.mean(W2_grad,0,False))
 
     def evaluate(self, dataset: MNIST.Dataset) -> float:
         self.eval()
@@ -111,12 +126,15 @@ class Model(torch.nn.Module):
             for batch in dataset.batches(self._args.batch_size):
                 # TODO: Compute the logits of the batch images as in the training,
                 # and then convert them to Numpy with `.numpy(force=True)`.
-                logits = ...
+                images = batch["images"].to(self._W1.device)
+                labels = batch["labels"].to(self._W1.device)
+                logits = self.forward(images)[2].numpy(force=True)
 
                 # TODO(sgd_backpropagation): Evaluate how many batch examples were predicted
                 # correctly and increase `correct` variable accordingly, assuming
                 # the model predicts the class with the highest logit/probability.
-                correct += ...
+                batch_predictions = np.argmax(logits,axis=1)
+                correct += int(torch.sum(batch_predictions == batch["labels"]))
 
         return correct / len(dataset)
 
@@ -152,15 +170,14 @@ def main(args: argparse.Namespace) -> tuple[float, float]:
 
     for epoch in range(args.epochs):
         # TODO(sgd_backpropagation): Run the `train_epoch` with `mnist.train` dataset
-        ...
-
+        model.train_epoch(mnist.train)
         # TODO(sgd_backpropagation): Evaluate the dev data using `evaluate` on `mnist.dev` dataset
-        dev_accuracy = ...
+        dev_accuracy = model.evaluate(mnist.dev)
         print("Dev accuracy after epoch {} is {:.2f}".format(epoch + 1, 100 * dev_accuracy), flush=True)
         writer.add_scalar("dev/accuracy", 100 * dev_accuracy, epoch + 1)
 
     # TODO(sgd_backpropagation): Evaluate the test data using `evaluate` on `mnist.test` dataset
-    test_accuracy = ...
+    test_accuracy = model.evaluate(mnist.test)
     print("Test accuracy after epoch {} is {:.2f}".format(epoch + 1, 100 * test_accuracy), flush=True)
     writer.add_scalar("test/accuracy", 100 * test_accuracy, epoch + 1)
 

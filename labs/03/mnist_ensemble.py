@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/czechen/Projects/Deep_Learning/NPFL/bin/python3
 import argparse
 
 import torch
@@ -62,7 +62,7 @@ def main(args: argparse.Namespace) -> tuple[list[float], list[float]]:
     individual_accuracies, ensemble_accuracies = [], []
     for model in range(args.models):
         # TODO: Compute the accuracy on the dev set for the individual `models[model]`.
-        individual_accuracy = ...
+        individual_accuracy = models[model].evaluate(dev)['test_accuracy']
 
         # TODO: Compute the accuracy on the dev set for the ensemble `models[0:model+1]`.
         #
@@ -76,7 +76,23 @@ def main(args: argparse.Namespace) -> tuple[list[float], list[float]]:
         #    on the `dev` dataloader (with `data_with_labels=True` to indicate the dataloader
         #    also contains the labels) and average the predicted distributions. To measure
         #    accuracy, either do it completely manually or use `torchmetrics.Accuracy`.
-        ensemble_accuracy = ...
+        class EnsembleModel(npfl138.TrainableModule):
+            def __init__(self,models) -> None:
+                super().__init__()
+                self.models = models
+            
+            def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+                predictions = torch.zeros([inputs.shape[0],MNIST.LABELS])
+                for model in self.models:
+                    predictions += torch.softmax(model.forward(inputs),dim=1)
+                return predictions/len(self.models)
+
+        ensemble_model = EnsembleModel(models[0:model+1])
+        ensemble_model.configure(
+                loss=torch.nn.CrossEntropyLoss(),
+                metrics={"accuracy": torchmetrics.Accuracy("multiclass", num_classes=MNIST.LABELS)}
+                )
+        ensemble_accuracy = ensemble_model.evaluate(dev)['test_accuracy']
 
         # Store the accuracies
         individual_accuracies.append(individual_accuracy)
