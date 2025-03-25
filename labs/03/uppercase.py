@@ -23,7 +23,7 @@ parser.add_argument("--window", default=5, type=int, help="Window size to use.")
 parser.add_argument("--embedding_dim",default=3,type=int,help='Length of embedded vectors')
 
 class BatchGenerator:
-    """A simple batch generator, optionally with suffling.
+    """A simple batch generator, optionally with shuffling.
 
     The functionality of this batch generator is very similar to
         torch.utils.data.DataLoader(
@@ -134,6 +134,7 @@ def main(args: argparse.Namespace) -> None:
     sigmoid = torch.nn.Sigmoid()
     #test_prediction = np.round(model(uppercase_data.test.windows))
     with open(os.path.join(args.logdir, "uppercase_test.txt"), "w", encoding="utf-8") as predictions_file:
+<<<<<<< HEAD
         with torch.no_grad():
             i=0
             for windows, outputs in test:
@@ -144,6 +145,13 @@ def main(args: argparse.Namespace) -> None:
                     else:
                         print(uppercase_data.test.text[i+character].lower(), file=predictions_file, end='')
                 i += test_prediction.shape[0]
+=======
+        # Get the test set predictions; if you modified the `test` dataloader or your model
+        # does not process the dataset windows, you might need to adjust the following line.
+        predictions = model.predict(test, data_with_labels=True)
+        ...
+
+>>>>>>> 566e03b299d6b0df2f15c9cebf9777899e9ad219
 
 if __name__ == "__main__":
     main_args = parser.parse_args([] if "__file__" not in globals() else None)
