@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/czechen/Projects/Deep_Learning/NPFL/bin/python3
 import argparse
 import datetime
 import os
@@ -6,7 +6,7 @@ import re
 
 import torch
 import torchmetrics
-
+import re
 import npfl138
 npfl138.require_version("2425.4")
 from npfl138.datasets.mnist import MNIST
@@ -29,10 +29,31 @@ class Dataset(npfl138.TransformedDataset):
         label = example["label"]  # a torch.Tensor with a single integer representing the label
         return image, label  # return an (input, target) pair
 
+class Resiudal(torch.nn.Module):
+    def __init__(self,layers):
+        super().__init__()
+        self.module = torch.nn.Sequential()
+        layers = layers.strip("[]").split(",")
+        for layer in layers:
+            specs = layer.split("-")
+            if specs[0] == 'C':
+                self.module.append(torch.nn.LazyConv2d(out_channels=int(specs[1]),kernel_size=int(specs[2]),stride=int(specs[3]),padding=specs[-1]))
+                self.module.append(torch.nn.ReLU())
+            elif specs[0] == 'CB':
+                self.module.append(torch.nn.LazyConv2d(out_channels=int(specs[1]),kernel_size=int(specs[2]),stride=int(specs[3]),padding=specs[-1],bias=False))
+                self.module.append(torch.nn.LazyBatchNorm2d())
+                self.module.append(torch.nn.ReLU())
+            elif specs[0] == 'M':
+                self.module.append(torch.nn.MaxPool2d(kernel_size=int(specs[1]),stride=int(specs[2])))
+        
+    def forward(self,inputs):
+        layer_pass = self.module(inputs)
+        return inputs+layer_pass
 
 class Model(npfl138.TrainableModule):
     def __init__(self, args: argparse.Namespace) -> None:
-        # TODO: Add CNN layers specified by `args.cnn`, which contains
+        super().__init__()
+        # TODO: Add CNN layers specsified by `args.cnn`, which contains
         # a comma-separated list of the following layers:
         # - `C-filters-kernel_size-stride-padding`: Add a convolutional layer with ReLU
         #   activation and specified number of filters, kernel size, stride and padding.
@@ -67,11 +88,37 @@ class Model(npfl138.TrainableModule):
         # To that end, you can use for example
         #   self.eval()(torch.zeros(1, MNIST.C, MNIST.H, MNIST.W))
         # where the `self.eval()` is necessary to avoid the batchnorms to update their running statistics.
+        module = torch.nn.Sequential()
+        layers = re.split(r',(?![^\[]*\])', args.cnn)
+        for layer in layers:
+            specs = re.split(r'-(?![^\[]*\])',layer)
+            if specs[0] == 'C':
+                module.append(torch.nn.LazyConv2d(out_channels=int(specs[1]),kernel_size=int(specs[2]),stride=int(specs[3]),padding=specs[-1]))
+                module.append(torch.nn.ReLU())
+            elif specs[0] == 'CB':
+                module.append(torch.nn.LazyConv2d(out_channels=int(specs[1]),kernel_size=int(specs[2]),stride=int(specs[3]),padding=specs[-1],bias=False))
+                module.append(torch.nn.LazyBatchNorm2d())
+                module.append(torch.nn.ReLU())
+            elif specs[0] == 'M':
+                module.append(torch.nn.MaxPool2d(kernel_size=int(specs[1]),stride=int(specs[2])))
+            elif specs[0] == 'R':
+                module.append(Resiudal(specs[1]))
+            elif specs[0] == 'F':
+                module.append(torch.nn.Flatten())
+            elif specs[0] == 'H':
+                module.append(torch.nn.LazyLinear(out_features=int(specs[1])))
+                module.append(torch.nn.ReLU())
+            else:
+                module.append(torch.nn.Dropout(float(specs[1])))
+         
 
         # TODO: Finally, add the final Linear output layer with `MNIST.LABELS` units.
-        ...
-
-
+        module.append(torch.nn.LazyLinear(MNIST.LABELS))
+        super().__init__(module)
+        
+        self.eval()(torch.zeros(1,MNIST.C,MNIST.H,MNIST.W))
+    
+    
 def main(args: argparse.Namespace) -> dict[str, float]:
     # Set the random seed and the number of threads.
     npfl138.startup(args.seed, args.threads)

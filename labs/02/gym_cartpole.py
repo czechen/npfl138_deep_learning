@@ -119,7 +119,11 @@ def main(args: argparse.Namespace) -> torch.nn.Module | None:
         # `fit` method, each being a callable accepting the model, epoch, and logs.
         # Such callbacks are called after every epoch and if they modify the
         # logs dictionary, the values are logged on the console and to TensorBoard.
-        model.fit(train, epochs=args.epochs, callbacks=[])
+        def evaluate_callback(model, epoch, logs):
+            if epoch % 10 == 0:
+                logs["evaluation"] = evaluate_model(model, episodes=50)
+
+        model.fit(train, epochs=args.epochs, callbacks=[evaluate_callback])
 
         # Save the model, both the hyperparameters and the parameters. If you
         # added additional arguments to the `Model` constructor beyond `args`,
