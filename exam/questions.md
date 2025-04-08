@@ -124,3 +124,52 @@
   a convolutional kernel $K$ with size $N \times M$, stride $S$ and $O$ output
   channels. Write down (or derive) the equation of transposed convolution
   (or equivalently backpropagation through a convolution to its inputs). [5]
+
+#### Questions@:, Lecture 7 Questions
+- Write down how the Long Short-Term Memory (LSTM) cell operates, including
+  the explicit formulas. Also mention the forget gate bias. [10]
+
+- Write down how the Gated Recurrent Unit (GRU) operates, including
+  the explicit formulas. [10]
+
+- Why the usual dropout cannot be used on recurrent state? Describe
+  how the problem can be alleviated with variational dropout. [5]
+
+- Describe layer normalization including all its parameters, and write down how
+  it is computed (be sure to explicitly state over what is being normalized in
+  case of fully connected layers and convolutional layers). [5]
+
+- Draw a tagger architecture utilizing word embeddings, recurrent
+  character-level word embeddings (including how are these computed from
+  individual characters), and two sentence-level bidirectional RNNs (explaining
+  the bidirectionality) with a residual connection. Where would you put the
+  dropout layers? [10]
+
+#### Questions@:, Lecture 8 Questions
+- In the context of named entity recognition, describe what the BIO encoding
+  is and why it is used. [5]
+
+- Write down the dynamic programming algorithm for decoding a BIO-tag sequence,
+  including its asymptotic complexity. [10]
+
+- In the context of CTC loss, describe regular and extended labelings and
+  write down the algorithm for computing the log probability of a gold label
+  sequence $\boldsymbol y$. [10]
+
+- Describe how CTC predictions are performed using a beam-search. [5]
+
+- Draw the CBOW architecture from `word2vec`, including the sizes of the inputs
+  and the sizes of the outputs and used non-linearities. Also make sure to
+  indicate where the embeddings are being trained. [5]
+
+- Draw the SkipGram architecture from `word2vec`, including the sizes of the
+  inputs and the sizes of the outputs and used non-linearities. Also make sure
+  to indicate where the embeddings are being trained. [5]
+
+- Describe the hierarchical softmax used in `word2vec`. [5]
+
+- Describe the negative sampling proposed in `word2vec`, including
+  the choice of distribution of negative samples. [5]
+
+- Explain how are ELMo embeddings trained and how are they used in downstream
+  applications. [5]
