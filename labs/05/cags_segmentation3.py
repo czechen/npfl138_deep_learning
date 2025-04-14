@@ -6,7 +6,6 @@ import re
 
 import numpy as np
 import timm
-import torchmetrics
 import torch
 import torchvision.transforms.v2 as v2
 
@@ -23,11 +22,11 @@ parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 parser.add_argument("--dataloader_workers", default=0, type=int, help="Number of dataloader workers.")
 
-class Resiudal(torch.nn.Module):
+class Residual(torch.nn.Module):
     def __init__(self,in_channels,double=False):
         super().__init__()
         self._double = double
-        self.resiudal_block = torch.nn.Sequential(torch.nn.BatchNorm2d(in_channels),torch.nn.ReLU())
+        self.resiudal_block = torch.nn.Sequential()
         self.resiudal_block.append(torch.nn.Conv2d(in_channels,in_channels//4,kernel_size=1,stride=1,padding='same',bias=False))
         self.resiudal_block.append(torch.nn.BatchNorm2d(in_channels//4))
         self.resiudal_block.append(torch.nn.ReLU())
@@ -41,14 +40,17 @@ class Resiudal(torch.nn.Module):
         return inputs+layer_pass
 
 class TransformedDataset(npfl138.TransformedDataset):
-    def __init__(self, dataset,preprocessing=None, augmentation_fn=None) -> None:
+    def __init__(self, dataset,preprocessing=None, augmentation_fn=None,label_smoothing=0.0) -> None:
         super().__init__(dataset)
         self._augmentation_fn = augmentation_fn
         self._preprocessing = preprocessing
+        self._label_smoothing = label_smoothing
 
     def transform(self, example: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         image = example['image']
         mask = example['mask']
+        if self._label_smoothing:
+            pass
         image = self._preprocessing(image)
         if self._augmentation_fn != None:
             image = self._augmentation_fn(image)
@@ -85,35 +87,42 @@ class Model(npfl138.TrainableModule):
                 torch.nn.Conv2d(incoming_channels,incoming_channels,kernel_size=3,stride=1,padding='same'),
                 torch.nn.BatchNorm2d(incoming_channels),
                 torch.nn.ReLU(),
-                Resiudal(incoming_channels),
-                Resiudal(incoming_channels)))
+                Residual(incoming_channels),
+                Residual(incoming_channels),
+                ))
             incoming_channels //= 2
 
         self._last_incoming = torch.nn.Sequential(torch.nn.Sequential(torch.nn.Conv2d(output_channels,output_channels,kernel_size=3,stride=1,padding='same')))
 
-        self._last_conv = torch.nn.Sequential(torch.nn.Sequential(
+        self._224_conv = torch.nn.Sequential(
             torch.nn.ConvTranspose2d(output_channels,output_channels//2,kernel_size=2,stride=2,padding=0),
             torch.nn.BatchNorm2d(output_channels//2),
             torch.nn.ReLU(),
             torch.nn.ConvTranspose2d(output_channels//2,output_channels//4,kernel_size=2,stride=2,padding=0),
             torch.nn.BatchNorm2d(output_channels//4),
             torch.nn.ReLU(),
-            torch.nn.Conv2d(output_channels//4,1,kernel_size=3,stride=1,padding='same')))
+            )
+        self._input_conv = torch.nn.Sequential(torch.nn.Conv2d(3,output_channels//4,kernel_size=3,stride=1,padding='same'))
+        self._last_conv = torch.nn.Sequential(torch.nn.Conv2d(output_channels//4,output_channels//4,kernel_size=3,stride=1,padding='same'),
+                                              torch.nn.BatchNorm2d(output_channels//4),
+                                              torch.nn.ReLU(),
+                                              torch.nn.Conv2d(output_channels//4,1,kernel_size=1,stride=1,padding='same'))
+        self._sigmoid = torch.nn.Sigmoid()
 
     def forward(self, images: torch.Tensor) -> torch.Tensor: 
+        images = images.to('cuda')
         with torch.no_grad():
             output,features = self._backbone.forward_intermediates(images)
             features = list(reversed(features[0:4]))
-        
         for i in range(len(features)-1):
             transposed_output = self._transposed_convolutions[i](output)
             incoming = self._incoming_convolutions[i](features[i])
             output_pre = transposed_output+incoming
             output = self._outgoing_convolutions[i](output_pre)
         
-        output_final = output + self._last_incoming(features[-1])
-        mask = self._last_conv(output_final)
-        return mask
+        output_224 = self._224_conv(output + self._last_incoming(features[-1]))
+        mask = self._last_conv(output_224+self._input_conv(images))
+        return self._sigmoid(mask)
 
 def main(args: argparse.Namespace) -> None:
     # Set the random seed and the number of threads.
@@ -149,11 +158,10 @@ def main(args: argparse.Namespace) -> None:
     ])
 
     augmentation_fn = v2.Compose([
-         v2.ColorJitter(brightness=.5, hue=.3,contrast=0.1),
-         v2.RandomChannelPermutation()
+         v2.ColorJitter(brightness=.1, hue=.1),
         ])
 
-    train = TransformedDataset(cags.train,preprocessing=preprocessing, augmentation_fn=augmentation_fn)
+    train = TransformedDataset(cags.train,preprocessing=preprocessing, augmentation_fn=None)
     dev = TransformedDataset(cags.dev,preprocessing=preprocessing,augmentation_fn=None)
     test = TransformedDataset(cags.test,preprocessing=preprocessing,augmentation_fn=None)
     
@@ -166,22 +174,21 @@ def main(args: argparse.Namespace) -> None:
     _optimizer = torch.optim.Adam(model.parameters(),lr=0.001)
 
     _scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(_optimizer,T_max=args.epochs*len(train),eta_min = 0.0001)
-    IoU_metric = cags.MaskIoUMetric(from_logits=True) 
+    IoU_metric = cags.MaskIoUMetric(from_logits=False)
     model.configure(
             optimizer=_optimizer,
             scheduler=_scheduler,
-            loss=torch.nn.BCEWithLogitsLoss(),
-            metrics={'IoU':IoU_metric},
+            loss=torch.nn.BCELoss(),
+            metrics={"IoU":IoU_metric},
             logdir=args.logdir
-        )    
-    ''' 
+        )   
+    model = model.to('cuda')
     for module in model._transposed_convolutions:
         module.to('cuda')
     for module in model._incoming_convolutions:
         module.to('cuda')
     for module in model._outgoing_convolutions:
         module.to('cuda')
-    '''
     logs = model.fit(train,dev=dev,epochs=args.epochs, callbacks=[])
     # Generate test set annotations, but in `args.logdir` to allow parallel execution.
     os.makedirs(args.logdir, exist_ok=True)

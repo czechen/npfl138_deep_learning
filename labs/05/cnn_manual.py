@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/czechen/Projects/Deep_Learning/NPFL/bin/python3
 import argparse
 
 import numpy as np
@@ -45,9 +45,21 @@ class Convolution:
         # manually iterate through the individual pixels, batch examples,
         # input filters, or output filters. However, you can manually
         # iterate through the kernel size.
-        output = ...
+        out_height = torch.floor_divide(inputs.shape[1]-self._kernel_size + self._stride,self._stride)
+        out_width = torch.floor_divide(inputs.shape[2]-self._kernel_size + self._stride,self._stride)
+
+        output = torch.zeros(inputs.shape[0],out_height,out_width,self._filters)
+        for i in range(self._kernel_size): #row index
+            for j in range(self._kernel_size): #column index
+                # we select the corresponding pixels which are multiplied by the given kernel element
+                output += torch.einsum('bhwc,cf->bhwf',
+                                       inputs[:,i:inputs.shape[1]-self._kernel_size+1+i:self._stride,j:inputs.shape[2]-self._kernel_size+1+j:self._stride,:],
+                                       self._kernel[i,j,:,:])
+        ReLU = torch.nn.ReLU()
+        output = ReLU(output + self._bias)
 
         # If requested, verify that `output` contains a correct value.
+         
         if self._verify:
             reference = torch.relu(torch.nn.functional.conv2d(
                 inputs.movedim(-1, 1), self._kernel.permute(3, 2, 0, 1), self._bias, self._stride)).movedim(1, -1)
@@ -65,7 +77,51 @@ class Convolution:
         # - the `inputs` layer,
         # - `self._kernel`,
         # - `self._bias`.
-        inputs_gradient, kernel_gradient, bias_gradient = ..., ..., ...
+        non_zero_outputs = (outputs > 0).to(torch.int)
+        outputs_gradient = outputs_gradient*non_zero_outputs          
+        
+        kernel_gradient = torch.empty(self._kernel.shape)
+        for i in range(self._kernel_size): #row index
+            for j in range(self._kernel_size): #column index
+                # we select the corresponding pixels which are multiplied by the given kernel element
+                a = torch.einsum('bhwf,bhwc->cf',
+                                 outputs_gradient,
+                                 inputs[:,i:inputs.shape[1]-self._kernel_size+1+i:self._stride,j:inputs.shape[2]-self._kernel_size+1+j:self._stride,:])
+                kernel_gradient[i,j,:,:] = a
+        
+        bias_gradient = torch.einsum('bhwf->f',outputs_gradient)
+
+
+        
+        #interlace the outputs_gradient with zeros
+        if self._stride > 1:
+            outputs_gradient_expanded = torch.zeros(outputs_gradient.shape[0],
+                                                    outputs_gradient.shape[1]*self._stride,
+                                                    outputs_gradient.shape[2]*self._stride,
+                                                    outputs_gradient.shape[3], dtype=outputs_gradient.dtype)
+            outputs_gradient_expanded[:,0::self._stride,0::self._stride,:] = outputs_gradient
+        else:
+            outputs_gradient_expanded = outputs_gradient
+        outputs_gradient_expanded = torch.nn.functional.pad(outputs_gradient_expanded,(0,0,
+                                                                                       self._kernel_size-1,self._kernel_size-1,
+                                                                                       self._kernel_size-1,self._kernel_size-1))
+        
+        #correct the outputs_gradient_expanded shape to match the inputs_shape
+        if outputs_gradient_expanded.shape[1] != inputs.shape[1]+(self._kernel_size-1):
+            outputs_gradient_expanded = outputs_gradient_expanded[:,:-(self._stride-1),:-(self._stride-1),:]
+        
+
+        flipped_kernel = torch.flip(self._kernel,[0,1])
+        inputs_gradient = torch.zeros(inputs.shape)
+        for i in range(self._kernel_size): #row index
+            for j in range(self._kernel_size): #column index
+                # we select the corresponding pixels which are multiplied by the given kernel element
+                a= torch.einsum('bhwf,cf->bhwc',
+                                       outputs_gradient_expanded[:,
+                                                                 i:outputs_gradient_expanded.shape[1]-self._kernel_size+1+i,
+                                                                 j:outputs_gradient_expanded.shape[2]-self._kernel_size+1+j,:],
+                                       flipped_kernel[i,j,:,:])
+                inputs_gradient += a
 
         # If requested, verify that the three computed gradients are correct.
         if self._verify:

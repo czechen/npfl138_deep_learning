@@ -6,7 +6,6 @@ import re
 
 import numpy as np
 import timm
-import torchmetrics
 import torch
 import torchvision.transforms.v2 as v2
 
@@ -23,7 +22,7 @@ parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 parser.add_argument("--dataloader_workers", default=0, type=int, help="Number of dataloader workers.")
 
-class Resiudal(torch.nn.Module):
+class Residual(torch.nn.Module):
     def __init__(self,in_channels,double=False):
         super().__init__()
         self._double = double
@@ -85,8 +84,10 @@ class Model(npfl138.TrainableModule):
                 torch.nn.Conv2d(incoming_channels,incoming_channels,kernel_size=3,stride=1,padding='same'),
                 torch.nn.BatchNorm2d(incoming_channels),
                 torch.nn.ReLU(),
-                Resiudal(incoming_channels),
-                Resiudal(incoming_channels)))
+                Residual(incoming_channels),
+                Residual(incoming_channels),
+                Residual(incoming_channels)
+                ))
             incoming_channels //= 2
 
         self._last_incoming = torch.nn.Sequential(torch.nn.Sequential(torch.nn.Conv2d(output_channels,output_channels,kernel_size=3,stride=1,padding='same')))
@@ -99,12 +100,13 @@ class Model(npfl138.TrainableModule):
             torch.nn.BatchNorm2d(output_channels//4),
             torch.nn.ReLU(),
             torch.nn.Conv2d(output_channels//4,1,kernel_size=3,stride=1,padding='same')))
+        self._sigmoid = torch.nn.Sigmoid()
 
     def forward(self, images: torch.Tensor) -> torch.Tensor: 
         with torch.no_grad():
             output,features = self._backbone.forward_intermediates(images)
             features = list(reversed(features[0:4]))
-        
+        print([f.shape for f in features])
         for i in range(len(features)-1):
             transposed_output = self._transposed_convolutions[i](output)
             incoming = self._incoming_convolutions[i](features[i])
@@ -113,7 +115,8 @@ class Model(npfl138.TrainableModule):
         
         output_final = output + self._last_incoming(features[-1])
         mask = self._last_conv(output_final)
-        return mask
+        
+        return self._sigmoid(mask)
 
 def main(args: argparse.Namespace) -> None:
     # Set the random seed and the number of threads.
@@ -142,15 +145,15 @@ def main(args: argparse.Namespace) -> None:
     # - `output` is a `[N, 1536, 7, 7]` tensor with the final features before global average pooling,
     # - `features` is a list of intermediate features with resolution 56x56, 56x56, 28x28, 14x14, 7x7.
     convnext_large = timm.create_model("convnext_large.fb_in22k_ft_in1k", pretrained=True, num_classes=0)
-    # Create a simple preprocessing performing necessary normalization.
+    
+        # Create a simple preprocessing performing necessary normalization.
     preprocessing = v2.Compose([
         v2.ToDtype(torch.float32, scale=True),  # The `scale=True` also rescales the image to [0, 1].
         v2.Normalize(mean=convnext_large.pretrained_cfg["mean"], std=convnext_large.pretrained_cfg["std"]),
     ])
 
     augmentation_fn = v2.Compose([
-         v2.ColorJitter(brightness=.5, hue=.3,contrast=0.1),
-         v2.RandomChannelPermutation()
+         v2.ColorJitter(brightness=.1, hue=.1,contrast=0.1),
         ])
 
     train = TransformedDataset(cags.train,preprocessing=preprocessing, augmentation_fn=augmentation_fn)
@@ -166,22 +169,22 @@ def main(args: argparse.Namespace) -> None:
     _optimizer = torch.optim.Adam(model.parameters(),lr=0.001)
 
     _scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(_optimizer,T_max=args.epochs*len(train),eta_min = 0.0001)
-    IoU_metric = cags.MaskIoUMetric(from_logits=True) 
+    IoU_metric = cags.MaskIoUMetric(from_logits=False)
     model.configure(
             optimizer=_optimizer,
             scheduler=_scheduler,
-            loss=torch.nn.BCEWithLogitsLoss(),
-            metrics={'IoU':IoU_metric},
+            loss=torch.nn.BCELoss(),
+            metrics={"IoU":IoU_metric},
             logdir=args.logdir
-        )    
-    ''' 
+        )   
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
     for module in model._transposed_convolutions:
-        module.to('cuda')
+        module.to(device)
     for module in model._incoming_convolutions:
-        module.to('cuda')
+        module.to(device)
     for module in model._outgoing_convolutions:
-        module.to('cuda')
-    '''
+        module.to(device)
     logs = model.fit(train,dev=dev,epochs=args.epochs, callbacks=[])
     # Generate test set annotations, but in `args.logdir` to allow parallel execution.
     os.makedirs(args.logdir, exist_ok=True)
