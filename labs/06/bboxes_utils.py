@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/czechen/Projects/Deep_Learning/NPFL/bin/python3
 import argparse
 from math import log
 from typing import Callable
@@ -67,7 +67,16 @@ def bboxes_to_rcnn(anchors: torch.Tensor, bboxes: torch.Tensor) -> torch.Tensor:
     the output shape is `[anchors_len, 4]`.
     """
     # TODO: Implement according to the docstring.
-    raise NotImplementedError()
+    rcnn = torch.empty(anchors.shape)
+    bbox_height,bbox_width = bboxes[...,BOTTOM]-bboxes[...,TOP], bboxes[...,RIGHT]-bboxes[...,LEFT]
+    anchor_height,anchor_width = anchors[...,BOTTOM]-anchors[...,TOP], anchors[...,RIGHT]-anchors[...,LEFT]
+    bbox_y_center,bbox_x_center = bboxes[...,TOP]+bbox_height/2, bboxes[...,LEFT]+bbox_width/2
+    anchor_y_center,anchor_x_center = anchors[...,TOP]+anchor_height/2, anchors[...,LEFT]+anchor_width/2
+    rcnn[...,0] = (bbox_y_center-anchor_y_center)/anchor_height
+    rcnn[...,1] = (bbox_x_center-anchor_x_center)/anchor_width
+    rcnn[...,2] = torch.log(bbox_height/anchor_height)
+    rcnn[...,3] = torch.log(bbox_width/anchor_width)
+    return rcnn
 
 
 def bboxes_from_rcnn(anchors: torch.Tensor, rcnns: torch.Tensor) -> torch.Tensor:
@@ -77,7 +86,18 @@ def bboxes_from_rcnn(anchors: torch.Tensor, rcnns: torch.Tensor) -> torch.Tensor
     the output shape is `[anchors_len, 4]`.
     """
     # TODO: Implement according to the docstring.
-    raise NotImplementedError()
+    anchor_height,anchor_width = anchors[...,BOTTOM]-anchors[...,TOP], anchors[...,RIGHT]-anchors[...,LEFT]
+    anchor_y_center,anchor_x_center = anchors[...,TOP]+anchor_height/2, anchors[...,LEFT]+anchor_width/2
+    bbox_width = torch.exp(rcnns[...,3])*anchor_width
+    bbox_height = torch.exp(rcnns[...,2])*anchor_height
+    bbox_y_center = rcnns[...,0]*anchor_height+anchor_y_center
+    bbox_x_center = rcnns[...,1]*anchor_width+anchor_x_center
+    bboxes = torch.empty(anchors.shape)
+    bboxes[...,TOP] = bbox_y_center-bbox_height/2
+    bboxes[...,LEFT] = bbox_x_center-bbox_width/2
+    bboxes[...,BOTTOM] = bbox_y_center+bbox_height/2
+    bboxes[...,RIGHT] = bbox_x_center+bbox_width/2
+    return bboxes
 
 
 def bboxes_training(
@@ -116,14 +136,29 @@ def bboxes_training(
     # largest IoU (the anchor with smaller index if there are several). In case
     # several gold objects are assigned to a single anchor, use the gold object
     # with smaller index.
+    
 
     # TODO: For each unused anchor, find the gold object with the largest IoU
     # (again the gold object with smaller index if there are several), and if
     # the IoU is >= threshold, assign the object to the anchor.
 
-    anchor_classes, anchor_bboxes = ..., ...
-
-    return anchor_classes, anchor_bboxes
+    anchor_classes, anchor_bboxes = torch.zeros(anchors.shape[:-1],dtype=torch.int64), torch.zeros(anchors.shape,dtype=torch.float32)
+    # returns all IoU values with shape (num of anchors, num of gold classes)
+    IoU_s = bboxes_iou(anchors[:,torch.newaxis,:],gold_bboxes[torch.newaxis,:,:]) 
+    
+    gold_to_anchor = torch.argmax(IoU_s,dim=0)
+    for gold_index,highest_iou_anchor in enumerate(gold_to_anchor):
+        if anchor_classes[highest_iou_anchor] == 0:
+            anchor_classes[highest_iou_anchor] = 1 + gold_classes[gold_index]        
+            anchor_bboxes[highest_iou_anchor] = bboxes_to_rcnn(anchors[highest_iou_anchor],gold_bboxes[gold_index])
+    
+    anchor_to_gold = torch.argmax(IoU_s,dim=1)
+    for anchor_index,highest_iou_gold in enumerate(anchor_to_gold):
+        if anchor_classes[anchor_index] == 0 and IoU_s[anchor_index][highest_iou_gold] >= iou_threshold:
+            anchor_classes[anchor_index] = 1+gold_classes[highest_iou_gold]        
+            anchor_bboxes[anchor_index] = bboxes_to_rcnn(anchors[anchor_index],gold_bboxes[highest_iou_gold])
+    
+    return anchor_classes,anchor_bboxes
 
 
 def main(args: argparse.Namespace) -> tuple[Callable, Callable, Callable]:

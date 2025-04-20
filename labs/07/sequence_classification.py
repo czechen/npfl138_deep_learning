@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/czechen/Projects/Deep_Learning/NPFL/bin/python3
 import argparse
 import datetime
 import os
@@ -59,19 +59,37 @@ class Model(npfl138.TrainableModule):
 
         # TODO: The sequence will be processed using an RNN with type `args.rnn` (LSTM/GRU/RNN)
         # and with dimensionality `args.rnn_dim`.
-        ...
-
+        match args.rnn:
+            case 'RNN':
+                self._recurrent_layer = torch.nn.RNN(args.sequence_dim, hidden_size=args.rnn_dim,batch_first=True)
+            case 'LSTM':
+                self._recurrent_layer = torch.nn.LSTM(args.sequence_dim, hidden_size=args.rnn_dim,batch_first=True)
+            case 'GRU':
+                self._recurrent_layer = torch.nn.GRU(args.sequence_dim, hidden_size=args.rnn_dim,batch_first=True)
+        self._recurrent_layer = torch.nn.Sequential(self._recurrent_layer)
         # TODO: If `args.hidden_layer` is nonzero, the result of the RNN should be processed
         # by a fully connected layer with `args.hidden_layer` units and ReLU activation.
-        ...
+        if args.hidden_layer:
+            self._hidden_layer = torch.nn.Sequential(
+                    torch.nn.Linear(args.rnn_dim,args.hidden_layer),
+                    torch.nn.ReLU())
+        else:
+            self._hidden_layer = None
 
         # TODO: The predictions are generated using a fully connected output layer
         # with one output and sigmoid activation.
-        ...
+        self._prediction_layer = torch.nn.Sequential(
+                torch.nn.Linear([args.rnn_dim,args.hidden_layer][args.hidden_layer > 0],1),
+                torch.nn.Sigmoid())
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         # TODO: Process the input sequence through the RNN and the other layers.
-        ...
+        rnn_processed,other = self._recurrent_layer(inputs)
+        if self._hidden_layer:
+            hidden_output = self._hidden_layer(rnn_processed)
+            return self._prediction_layer(hidden_output)
+        else:
+            return self._prediction_layer(rnn_processed)
 
 
 def main(args: argparse.Namespace) -> dict[str, float]:
@@ -96,6 +114,7 @@ def main(args: argparse.Namespace) -> dict[str, float]:
     train = torch.utils.data.DataLoader(train, batch_size=args.batch_size, shuffle=True)
     dev = torch.utils.data.DataLoader(dev, batch_size=args.batch_size)
 
+
     # Create the model and train
     model = Model(args)
 
@@ -105,7 +124,7 @@ def main(args: argparse.Namespace) -> dict[str, float]:
         def gradient_clipping(optimizer, _args, _kwargs):
             # TODO: Implement gradient clipping using `torch.nn.utils.clip_grad_norm_`,
             # clipping the gradient if its L2 norm is larger than `args.clip_gradient`.
-            ...
+            gradient_clipping = torch.nn.utils.clip_grad_norm_(model.parameters(),args.clip_gradient)
         optimizer.register_step_pre_hook(gradient_clipping)
 
     model.configure(
