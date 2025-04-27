@@ -42,8 +42,9 @@ class Model(npfl138.TrainableModule):
         #   - note that you need to provide `blank_token` and `sil_token` arguments
         #     and they must be valid tokens. For `blank_token`, you need to specify
         #     the token whose index corresponds to the blank token index;
-        #     for `sil_token`, you can use for example the space token, because by
-        #     default the `sil_token` has no effect on the decoding.
+        #     for `sil_token`, you can use also the blank token index (by default,
+        #     `sil_token` has ho effect on the decoding apart from being added as the
+        #     first and the last token of the predictions unless it is a blank token).
         # - `torchaudio.models.decoder.cuda_ctc_decoder`, which is faster GPU-based
         #   decoder with limited functionality.
         raise NotImplementedError()
@@ -100,7 +101,9 @@ def main(args: argparse.Namespace) -> None:
     dev = TrainableDataset(common_voice.dev).dataloader(args.batch_size)
     test = TrainableDataset(common_voice.test).dataloader(args.batch_size)
 
-    # TODO: Create the model and train it
+    # TODO: Create the model and train it. The `Model.compute_metrics` method assumes you
+    # passed the following metric to the `configure` method under the name "edit_distance":
+    #   CommonVoiceCs.EditDistanceMetric(ignore_index=CommonVoiceCs.PAD)
     model = ...
 
     # Generate test set annotations, but in `args.logdir` to allow parallel execution.
