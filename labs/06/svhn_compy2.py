@@ -29,7 +29,6 @@ parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 parser.add_argument("--dataloader_workers", default=0, type=int, help="Number of dataloader workers.")
 
-
 TOP: int = 0
 LEFT: int = 1
 BOTTOM: int = 2
@@ -51,7 +50,8 @@ def generate_anchors(p_level: int,scales: torch.Tensor):
                 anchors.append([i*(2**p_level),j*(2**p_level),min(224, i*(2**p_level) + scale[0]*(2**p_level)),min(224, j*(2**p_level) + scale[1]*(2**p_level))])
     return torch.tensor(anchors) 
 
-def resize_bboxes(bboxes,original_image_shape,target_size=(224,224)):
+def resize_bboxes(bboxes,original_image_shape,target_size=[[224,224]]):
+    
     H,W = list(original_image_shape)
     target_size = list(target_size[0])
     bboxes_height,bboxes_width = bboxes[...,BOTTOM]-bboxes[...,TOP], bboxes[...,RIGHT]-bboxes[...,LEFT]
@@ -80,14 +80,18 @@ class TransformedDataset(npfl138.TransformedDataset):
         classes = example['classes']
         bboxes = example['bboxes']
         if self._test:
-            return image, torch.empty(1,10),torch.empty(1,1,4),original_image_shape
+            return image, torch.empty(1,10),torch.empty(1,1,4),original_image_shape #for test examples return only image and original_image_shape
         if self._label_smoothing:
             pass
         if self._augmentation_fn != None:
             image = self._augmentation_fn(image,bboxes)
+        
         bboxes = resize_bboxes(bboxes,original_image_shape)
-        classes,bboxes = bboxes_utils.bboxes_training(self._anchors,classes,bboxes,iou_threshold=0.5)
+        classes,bboxes = bboxes_utils.bboxes_training(self._anchors,classes,bboxes,iou_threshold=0.5) #generate training examples
         classes_one_hot = torch.zeros((len(classes),10))
+
+        #one hot representation, where background corresponds to all zeros
+
         for index,class_label in enumerate(classes):
             if class_label == 0:
                 continue
@@ -113,16 +117,16 @@ class Model(npfl138.TrainableModule):
         self._train_iou_threshold = 0.5
         self._hubber_loss = torch.nn.HuberLoss(reduction='none')
 
+        self._backbone.requires_grad_(False)
+        self._backbone.eval()
+        
+        #process the C5 feature
         self._P5 = torch.nn.Sequential(
-                torch.nn.Conv2d(1536,args.head_dim,1,1,padding='same',bias=False),
-                torch.nn.BatchNorm2d(args.head_dim),
-                torch.nn.ReLU())
+                torch.nn.Conv2d(1536,args.head_dim,1,1,padding='same',bias=False))
 
+        #process the C4 feature
         self._P4 = torch.nn.Sequential(
-                torch.nn.Conv2d(768,args.head_dim,1,1,padding='same',bias=False),
-                torch.nn.BatchNorm2d(args.head_dim),
-                torch.nn.ReLU())
-
+                torch.nn.Conv2d(768,args.head_dim,1,1,padding='same',bias=False))
 
         self._classification_head = torch.nn.Sequential(
                 torch.nn.Conv2d(args.head_dim,args.head_dim,3,1,padding='same',bias=False),
@@ -155,13 +159,15 @@ class Model(npfl138.TrainableModule):
                 torch.nn.ReLU(),
                 torch.nn.Conv2d(args.head_dim,4*self._num_of_anchors,3,1,padding='same')
                 )
+    
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         #images = images.to('cuda')
         with torch.no_grad():
             output,features = self._backbone.forward_intermediates(images)
             C4 = features[-2]
             C5 = features[-1]
-
+    
+        #Process the backbone features
         P5 = self._P5(C5)
         P4 = self._P4(C4)
 
@@ -181,16 +187,20 @@ class Model(npfl138.TrainableModule):
           y: The target output batch of the model, either a single tensor or a sequence of tensors.
 
         Returns:
-          logs: A dictionary of logs from the training step.
-"""
-
-        #transform the targets using bboxex_utils
+          logs: A dictionary of logs from the training step
+          """
+        
+        # unwrap the targets (anchors) and generate predictions
         anchor_classes,anchor_bboxes,_ = y 
-        self.optimizer.zero_grad()
         classes_pred,bboxes_pred = self(*xs)
+
+        self.optimizer.zero_grad()
+        
         losses = self.compute_loss(anchor_classes,anchor_bboxes,classes_pred,bboxes_pred)
+        # Sum the classification (focal) loss with the regression (Huber) loss
         loss = losses[0]+losses[1]
         loss.backward()
+
         with torch.no_grad():
             self.optimizer.step()
             self.scheduler is not None and self.scheduler.step()
@@ -208,65 +218,83 @@ class Model(npfl138.TrainableModule):
                      score: torch.float16=0.45) -> torch.Tensor:
        
         #Compute the loss of the model given the inputs, predictions, and target outputs.
+        #reshape the predictions
+        # Classes: (batch_size, 14,14, num_of_anchors (3), num of labels (10))
+        # Bboxes: (batch_size, 14, 14, num_of_anchors (3), 4)
         classes_pred = classes_pred.reshape(-1,14,14,self._num_of_anchors,self._num_of_labels)
         bboxes_pred = bboxes_pred.reshape(-1,14,14,self._num_of_anchors,4)
-         
+        
+        #reshape the targets (anchors) to match the predictions
         anchor_classes = anchor_classes.reshape(-1,14,14,self._num_of_anchors,self._num_of_labels)
         anchor_bboxes = anchor_bboxes.reshape(-1,14,14,self._num_of_anchors,4)
-        
-        class_loss = torchvision.ops.sigmoid_focal_loss(classes_pred,anchor_classes,alpha=0.25,gamma=2,reduction='sum') 
+       
+        #compute the classification loss
+        class_loss = torchvision.ops.sigmoid_focal_loss(classes_pred,anchor_classes,alpha=0.5,gamma=2,reduction='sum') 
+
+        # get the mask of the non-background targets, compute the huber loss for all examples
+        # finally mask out background examples (so the loss is computed only for targets with non-background class)
 
         gt_positive_mask = (anchor_classes.sum(dim=-1) > 0).float()
         regression_loss = self._hubber_loss(bboxes_pred,anchor_bboxes) 
         regression_loss_per_anchor = regression_loss.sum(dim=-1)
         regression_loss = gt_positive_mask*regression_loss_per_anchor
-
+        
+        #compute the number of the non-background classes
         num_positive_anchors = gt_positive_mask.sum().clamp(min=1.0)
+        print(num_positive_anchors)
 
+        # average the losses
         class_loss_norm = class_loss/num_positive_anchors
         regression_loss_norm = regression_loss.sum()/num_positive_anchors
 
         return (class_loss_norm,regression_loss_norm)
 
-    def predict_test_step(self,xs,ys):
+    def predict_test_step(self,xs,ys,score):
         with torch.no_grad():
             classes_pred,bboxes_pred = self(*xs)
         
         original_image_shape = list(ys[-1])
+        
+        #reshape the predictions and compute the probabilities
         classes_logits = classes_pred.reshape(-1,self._num_of_labels)
         bboxes_deltas = bboxes_pred.reshape(-1, 4)
         class_probs = torch.sigmoid(classes_logits)
-
-        bboxes = bboxes_utils.bboxes_from_rcnn(self._anchors,bboxes_deltas)
-        
-        
+       
+        # Convert the bboxes form relative (to anchors) representation to XYXY representation 
+        bboxes = bboxes_utils.bboxes_from_rcnn(self._anchors.to('cpu'),bboxes_deltas.to('cpu'))
+        #bboxes = bboxes.to('cuda')
         final_boxes_list = []
         final_labels_list = []
 
+        # perfrom the non-maximum suppression on non-background predictions
         for class_idx in range(self._num_of_labels):
             current_class_scores = class_probs[:, class_idx]
 
-            score_mask = current_class_scores > 0.5 
-            
+            score_mask = current_class_scores > score 
             if not score_mask.any(): 
-                continue # No detections for this class above the threshold
+                continue 
+
 
             selected_scores = current_class_scores[score_mask]
-            selected_boxes = bboxes[score_mask] # These are already in XYXY format
+            selected_boxes = bboxes[score_mask]
 
             # Apply Non-Maximum Suppression (NMS)
             keep_indices = torchvision.ops.nms(
-                selected_boxes,         # Boxes in (x1, y1, x2, y2) format
-                selected_scores,        # Scores for these boxes
-                0.5 # IoU threshold for NMS (e.g., 0.5)
+                selected_boxes,        
+                selected_scores,        
+                iou_threshold = 0.5 
             )
-
-            # Store kept boxes, labels, and scores
+            
+            # append the kept bboxes resized to the original image shape
             final_boxes_list.append(resize_bboxes(selected_boxes[keep_indices],(224,224),original_image_shape))
-            # Create labels for the kept boxes (all are `class_idx` for this iteration)
+            
             final_labels_list.append(torch.full_like(selected_scores[keep_indices], class_idx, dtype=torch.long))
-            # final_scores_list.append(selected_scores[keep_indices]) # Uncomment if returning scores
+            
         
+        if not final_boxes_list: # No detections after NMS across all classes
+            return [-1], [[0,0,0,0]] #dummy value
+
+
         all_boxes_xyxy = torch.cat(final_boxes_list, dim=0)
         all_labels = torch.cat(final_labels_list, dim=0)
         return_labels = all_labels.cpu().tolist()
@@ -285,7 +313,7 @@ class Model(npfl138.TrainableModule):
                 | {"regression_loss": losses[1]} \
                 | {"total_loss": loss} 
     
-    def predict_test(self,dataloader: torch.utils.data.DataLoader):
+    def predict_test(self,dataloader: torch.utils.data.DataLoader,score):
         assert self.device is not None, "No device has been set for the TrainableModule, run configure first."
         self.eval()
         predicted_labels = []
@@ -294,12 +322,11 @@ class Model(npfl138.TrainableModule):
             xs, y = validate_batch_input_output(batch)
             xs = tuple(x.to(self.device) for x in (xs if is_sequence(xs) else (xs,)))
             y = tuple(y_.to(self.device) for y_ in y) if is_sequence(y) else y.to(self.device) 
-            labels,boxes = self.predict_test_step(xs,y)
-            predicted_labels.extend(labels)
-            predicted_boxes.extend(boxes)
-            print(predicted_labels[-1])
-            print(predicted_boxes[-1])
+            labels,boxes = self.predict_test_step(xs,y,score)
+            predicted_labels.append(labels)
+            predicted_boxes.append(boxes)
         return predicted_labels,predicted_boxes
+
 
 def main(args: argparse.Namespace) -> None:
     # Set the random seed and the number of threads.
@@ -371,22 +398,22 @@ def main(args: argparse.Namespace) -> None:
             logdir=args.logdir
         )  
 
-    #result = model.predict_test(test)
-    #logs = model.fit(train,dev=dev,epochs=args.epochs, callbacks=[])
+    logs = model.fit(train,dev=dev,epochs=args.epochs, callbacks=[])
     # Generate test set annotations, but in `args.logdir` to allow parallel execution.
     os.makedirs(args.logdir, exist_ok=True)
-    with open(os.path.join(args.logdir, "svhn_competition.txt"), "w", encoding="utf-8") as predictions_file:
-        # TODO: Predict the digits and their bounding boxes on the test set.
-        # Assume that for a single test image we get
-        # - `predicted_classes`: a 1D array with the predicted digits,
-        # - `predicted_bboxes`: a [len(predicted_classes), 4] array with bboxes;
-
-        for predicted_classes, predicted_bboxes in model.predict_test(test):
-            output = []
-            for label, bbox in zip(predicted_classes, predicted_bboxes):
-                output += [int(label)] + list(map(float, bbox))
-            print(*output, file=predictions_file)
-
+    for score in [0.1,0.2,0.3,0.4,0.5]:
+        with open(os.path.join(args.logdir, f"svhn_competition_{score}.txt"), "w", encoding="utf-8") as predictions_file:
+            # TODO: Predict the digits and their bounding boxes on the test set.
+            # Assume that for a single test image we get
+            # - `predicted_classes`: a 1D array with the predicted digits,
+            # - `predicted_bboxes`: a [len(predicted_classes), 4] array with bboxes;
+            predicted_classes_all, predicted_bboxes_all = model.predict_test(test,score)
+            for predicted_classes, predicted_bboxes in zip(predicted_classes_all,predicted_bboxes_all):
+                output = []
+                for label, bbox in zip(predicted_classes, predicted_bboxes):
+                    output += [int(label)] + list(map(float, bbox))
+                print(*output, file=predictions_file)
+    
 
 if __name__ == "__main__":
     main_args = parser.parse_args([] if "__file__" not in globals() else None)

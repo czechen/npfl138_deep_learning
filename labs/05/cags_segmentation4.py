@@ -157,10 +157,11 @@ def main(args: argparse.Namespace) -> None:
     # - `output` is a `[N, 1536, 7, 7]` tensor with the final features before global average pooling,
     # - `features` is a list of intermediate features with resolution 56x56, 56x56, 28x28, 14x14, 7x7.
     convnext_large = timm.create_model("convnext_large.fb_in22k_ft_in1k", pretrained=True, num_classes=0)
-    # Create a simple preprocessing performing necessary normalization.
-    preprocessing = v2.Compose([
-        v2.ToDtype(torch.float32, scale=True),  # The `scale=True` also rescales the image to [0, 1].
-        v2.Normalize(mean=convnext_large.pretrained_cfg["mean"], std=convnext_large.pretrained_cfg["std"]),
+
+    # create a simple preprocessing performing necessary normalization.
+    preprocessing = v2.compose([
+        v2.todtype(torch.float32, scale=true),  # the `scale=true` also rescales the image to [0, 1].
+        v2.normalize(mean=convnext_large.pretrained_cfg["mean"], std=convnext_large.pretrained_cfg["std"]),
     ])
 
     augmentation_fn = v2.Compose([
@@ -189,14 +190,7 @@ def main(args: argparse.Namespace) -> None:
             logdir=args.logdir
         )   
     model = model.to('cuda')
-    '''
-    for module in model._transposed_convolutions:
-        module.to('cuda')
-    for module in model._incoming_convolutions:
-        module.to('cuda')
-    for module in model._outgoing_convolutions:
-        module.to('cuda')
-    '''
+
     logs = model.fit(train,dev=dev,epochs=args.epochs, callbacks=[])
     # Generate test set annotations, but in `args.logdir` to allow parallel execution.
     os.makedirs(args.logdir, exist_ok=True)
