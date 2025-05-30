@@ -33,6 +33,17 @@ _Note that your results may be slightly different, depending on your CPU type an
 ```
 Epoch 1/1 4.7s train_loss=1.1229 sample_mean=0.4163 sample_std=0.2942
 ```
+To make debugging easier, here are variances of the first batches of various quantities:
+```
+The torch.var of the first batch of noisy training images (model input): 1.0105
+The torch.var of the first batch of embedded times: 0.3440
+The torch.var of the first batch returned by ResidualBlock: 0.4083
+The torch.var of the first batch returned by DownscalingBlock: (0.2946, 0.4083)
+The torch.var of the first batch returned by UpscalingBlock: 0.3679
+The torch.var of the first batch of model predictions during training: 0.8467
+The torch.var of the first batch of target outputs during training: 2.4856
+The torch.var of the first batch of model predictions during generate: 0.8083
+```
 
 2. `python3 flow_matching.py --epochs=1 --epoch_batches=10 --batch_size=12 --stages=3 --stage_blocks=1 --channels=12 --ema=0.8 --sampling_steps=7`
 ```
