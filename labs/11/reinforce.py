@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/czechen/Projects/Deep_Learning/NPFL/bin/python3
 import argparse
 
 import gymnasium as gym
@@ -15,10 +15,10 @@ parser.add_argument("--render_each", default=0, type=int, help="Render some epis
 parser.add_argument("--seed", default=None, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 # For these and any other arguments you add, ReCodEx will keep your default value.
-parser.add_argument("--batch_size", default=..., type=int, help="Batch size.")
-parser.add_argument("--episodes", default=..., type=int, help="Training episodes.")
-parser.add_argument("--hidden_layer_size", default=..., type=int, help="Size of hidden layer.")
-parser.add_argument("--learning_rate", default=..., type=float, help="Learning rate.")
+parser.add_argument("--batch_size", default=100, type=int, help="Batch size.")
+parser.add_argument("--episodes", default=3000, type=int, help="Training episodes.")
+parser.add_argument("--hidden_layer_size", default=64, type=int, help="Size of hidden layer.")
+parser.add_argument("--learning_rate", default=0.01, type=float, help="Learning rate.")
 
 
 class Agent:
@@ -29,16 +29,21 @@ class Agent:
         # TODO: Create a suitable model of the policy. Note that the shape
         # of the observations is available in `env.observation_space.shape`
         # and the number of actions in `env.action_space.n`.
+        self._args = args
         self._policy = torch.nn.Sequential(
-            ...
+            torch.nn.Linear(env.observation_space.shape[0],args.hidden_layer_size),
+            torch.nn.ReLU(),
+            torch.nn.Linear(args.hidden_layer_size,env.action_space.n),
         ).to(self.device)
+        
+
 
         # TODO: Define an optimizer. Using `torch.optim.Adam` optimizer with
         # the given `args.learning_rate` is a good default.
-        self._optimizer = ...
+        self._optimizer = torch.optim.Adam(self._policy.parameters(),args.learning_rate)
 
         # TODO: Define the loss (most likely some `torch.nn.*Loss`).
-        self._loss = ...
+        self._loss = torch.nn.CrossEntropyLoss(reduction='none')
 
     # The `npfl138.rl_utils.typed_torch_function` automatically converts input arguments
     # to PyTorch tensors of given type, and converts the result to a NumPy array.
@@ -48,12 +53,17 @@ class Agent:
         # The easiest approach is to construct the cross-entropy loss with
         # `reduction="none"` argument and then weight the losses of the individual
         # examples by the corresponding returns.
-        raise NotImplementedError()
+        policy_pred = self._policy(states)
+        CE_Loss = self._loss(policy_pred,actions)
+        loss = torch.sum(CE_Loss*returns) 
+        self._optimizer.zero_grad()
+        loss.backward()
+        self._optimizer.step()
 
     @npfl138.rl_utils.typed_torch_function(device, torch.float32)
     def predict(self, states: torch.Tensor) -> np.ndarray:
         # TODO: Define the prediction method returning policy probabilities.
-        raise NotImplementedError()
+        return torch.nn.Softmax(dim=0)(self._policy(states))
 
 
 def main(env: npfl138.rl_utils.EvaluationEnv, args: argparse.Namespace) -> None:
@@ -75,7 +85,8 @@ def main(env: npfl138.rl_utils.EvaluationEnv, args: argparse.Namespace) -> None:
                 # TODO: Choose `action` according to probabilities
                 # distribution (see `np.random.choice`), which you
                 # can compute using `agent.predict` and current `state`.
-                action = ...
+                actions_probs = agent.predict(state)
+                action = np.random.choice(2,1,p=actions_probs)[0]
 
                 next_state, reward, terminated, truncated, _ = env.step(action)
                 done = terminated or truncated
@@ -87,20 +98,25 @@ def main(env: npfl138.rl_utils.EvaluationEnv, args: argparse.Namespace) -> None:
                 state = next_state
 
             # TODO: Compute returns by summing rewards.
-            ...
+            returns = np.cumsum(rewards[::-1])[::-1]
 
             # TODO: Append states, actions and returns to the training batch.
-            ...
+            batch_states.append(states)
+            batch_returns.append(returns)
+            batch_actions.append(actions)
 
         # TODO: Train using the generated batch.
-        ...
+        batch_actions = np.concatenate(batch_actions)
+        batch_states = np.concatenate(batch_states)
+        batch_returns = np.concatenate(batch_returns)
+        agent.train(batch_states,batch_actions,batch_returns)
 
     # Final evaluation
     while True:
         state, done = env.reset(start_evaluation=True)[0], False
         while not done:
             # TODO: Choose a greedy action.
-            action = ...
+            action = np.argmax(agent.predict(state))
             state, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
 

@@ -110,7 +110,8 @@ class Model(npfl138.TrainableModule):
         tokens_batch = []
         results = self._CTCDecoder(y_pred,input_lengths)
         for i in range(y_pred.shape[0]):
-            tokens_batch.append(results[i][0].tokens.tolist())
+            tokens_batch.append(results[i][0].tokens)
+        print(tokens_batch)
         return tokens_batch
 
     def compute_metrics(
@@ -194,13 +195,14 @@ def main(args: argparse.Namespace) -> None:
             metrics={"edit_distance": common_voice.EditDistanceMetric(ignore_index=CommonVoiceCs.PAD)},
             logdir=args.logdir
         )  
-    logs = model.fit(train, dev=dev, epochs=args.epochs)
+    #logs = model.fit(train, dev=dev, epochs=args.epochs)
 
     # Generate test set annotations, but in `args.logdir` to allow parallel execution.
     os.makedirs(args.logdir, exist_ok=True)
     with open(os.path.join(args.logdir, "speech_recognition.txt"), "w", encoding="utf-8") as predictions_file:
         # TODO: Predict the CommonVoice sentences.
-        predictions = model.predict(test)
+        predictions = model.predict(test,data_with_labels=True)
+        print(predictions)
         for sentence in predictions:
             print("".join(CommonVoiceCs.LETTER_NAMES[char] for char in sentence), file=predictions_file)
 

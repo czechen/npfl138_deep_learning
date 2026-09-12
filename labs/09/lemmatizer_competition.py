@@ -216,7 +216,7 @@ class Model(npfl138.TrainableModule):
         self.metrics["accuracy"].update(torch.all((y_pred == y) | (y == MorphoDataset.PAD), dim=-1))
         return {name: metric.compute() for name, metric in self.metrics.items()}  # Return all metrics.
 
-    def train_step(self, xs, y):
+   def train_step(self, xs, y):
         result = super().train_step(xs, y)
 
         self._batches += 1

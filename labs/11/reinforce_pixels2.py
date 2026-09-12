@@ -4,7 +4,6 @@ import argparse
 import gymnasium as gym
 import numpy as np
 import torch
-import os
 
 import npfl138
 npfl138.require_version("2425.11")
@@ -16,10 +15,62 @@ parser.add_argument("--render_each", default=0, type=int, help="Render some epis
 parser.add_argument("--seed", default=None, type=int, help="Random seed.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 # For these and any other arguments you add, ReCodEx will keep your default value.
-parser.add_argument("--batch_size", default=10, type=int, help="Batch size.")
+parser.add_argument("--batch_size", default=100, type=int, help="Batch size.")
 parser.add_argument("--episodes", default=1000, type=int, help="Training episodes.")
-parser.add_argument("--learning_rate", default=0.003, type=float, help="Learning rate.")
-parser.add_argument("--model_path", default="model", type=str, help="Path to save/load the agent model.")
+parser.add_argument("--learning_rate", default=0.001, type=float, help="Learning rate.")
+
+
+class ActorCritic(torch.nn.Module):
+    def __init__(self, observation_shape: tuple, num_actions: int):
+        super().__init__()
+        in_channels = observation_shape[2]
+
+        # Shared CNN feature extractor (backbone)
+        # This architecture is inspired by standard models used in deep RL (like Nature DQN)
+        self.backbone = torch.nn.Sequential(
+            torch.nn.Conv2d(in_channels, 16, kernel_size=4, stride=4), # (B, 16, 19, 19) for 80x80 input
+            torch.nn.BatchNorm2d(16),
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(16, 32, kernel_size=2, stride=2),          # (B, 32, 8, 8)
+            torch.nn.BatchNorm2d(32),
+            torch.nn.ReLU(),
+            torch.nn.Flatten(),
+        )
+
+        # To connect the backbone to the heads, we need to know the size of the flattened features.
+        # We can compute this automatically by doing a forward pass with a dummy tensor.
+        with torch.no_grad():
+            dummy_input = torch.zeros(1, in_channels, observation_shape[0], observation_shape[1])
+            flattened_size = self.backbone(dummy_input).shape[1]
+
+        # Policy head (Actor)
+        self.policy_head = torch.nn.Sequential(
+            torch.nn.Linear(flattened_size, 64),
+            torch.nn.ReLU(),
+            #torch.nn.Dropout(0.5),
+            torch.nn.Linear(64, num_actions)
+        )
+
+        # Value head (Critic)
+        self.value_head = torch.nn.Sequential(
+            torch.nn.Linear(flattened_size, 128),
+            torch.nn.ReLU(),
+            #torch.nn.Dropout(0.5),
+            torch.nn.Linear(128, 1)
+        )
+
+    def forward(self, states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Performs a forward pass through the network.
+        Args:
+            states: A tensor of shape (B, C, H, W).
+        Returns:
+            A tuple containing (action_logits, state_values).
+        """
+        features = self.backbone(states)
+        action_logits = self.policy_head(features)
+        state_values = self.value_head(features)
+        return action_logits, state_values.squeeze(-1)
 
 class Agent:
     # Use an accelerator if available.
@@ -38,118 +89,63 @@ class Agent:
         # is a good default.
         self._args = args
         
-        self._policy = torch.nn.Sequential(
-                torch.nn.Conv2d(env.observation_space.shape[-1],16,5,3),
-                torch.nn.ReLU(),
-                torch.nn.MaxPool2d(3,2),
-                torch.nn.Conv2d(16,24,5,3),
-                torch.nn.Flatten(),
-                #torch.nn.Dropout(0.5),
-                torch.nn.Linear(216,env.action_space.n))
-                
+        self._model = ActorCritic(env.observation_space.shape, env.action_space.n).to(self.device)
 
-        self._value_net = torch.nn.Sequential(
-                torch.nn.Conv2d(env.observation_space.shape[-1],16,5,3),
-                torch.nn.ReLU(),
-                torch.nn.MaxPool2d(3,2),
-                torch.nn.Conv2d(16,24,5,3),
-                torch.nn.Flatten(),
-                #torch.nn.Dropout(0.5),
-                torch.nn.Linear(216,1))
 
-        #params = list(self._policy.parameters()) + list(self._value_net.parameters())
-        #self._optimizer = torch.optim.Adam(params,args.learning_rate)
-        self._policy_optimizer = torch.optim.Adam(self._policy.parameters(), lr=args.learning_rate)
-        self._value_optimizer = torch.optim.Adam(self._value_net.parameters(), lr=args.learning_rate)
-        self._CEloss = torch.nn.CrossEntropyLoss(reduction='none')
-        self._MSE = torch.nn.MSELoss()
+        self._optimizer = torch.optim.Adam(self._model.parameters(), args.learning_rate)
+        self._ce_loss_fn = torch.nn.CrossEntropyLoss(reduction='none')
+        self._mse_loss_fn = torch.nn.MSELoss()
 
     def save(self, path: str) -> None:
-        """Saves the state of the policy and value networks."""
-        # It's good practice to save models on CPU to ensure they can be loaded anywhere
-        self._policy.to("cpu")
-        self._value_net.to("cpu")
-        torch.save({
-            'policy_state_dict': self._policy.state_dict(),
-            'value_net_state_dict': self._value_net.state_dict(),
-        }, path)
+        # Save the state_dict of the single model
+        torch.save(self._model.state_dict(), path)
         print(f"Agent model saved to {path}")
-        # Move models back to the original device
-        self._policy.to(self.device)
-        self._value_net.to(self.device)
 
-    # ADDED: Method to load the model's state
     def load(self, path: str) -> None:
-        """Loads the state of the policy and value networks."""
         if not os.path.exists(path):
             raise FileNotFoundError(f"Model file not found at {path}")
-        # Load the checkpoint, mapping storage to the agent's device
-        checkpoint = torch.load(path, map_location=self.device)
-        self._policy.load_state_dict(checkpoint['policy_state_dict'])
-        self._value_net.load_state_dict(checkpoint['value_net_state_dict'])
-        # Set models to evaluation mode (important for layers like BatchNorm, Dropout)
-        self._policy.eval()
-        self._value_net.eval()
+        # Load the state_dict into the single model
+        self._model.load_state_dict(torch.load(path, map_location=self.device))
+        self._model.eval()
         print(f"Agent model loaded from {path}")
-    
 
     # The `npfl138.rl_utils.typed_torch_function` automatically converts input arguments
     # to PyTorch tensors of given type, and converts the result to a NumPy array.
+ 
     @npfl138.rl_utils.typed_torch_function(device, torch.float32, torch.int64, torch.float32)
     def train(self, states: torch.Tensor, actions: torch.Tensor, returns: torch.Tensor) -> None:
-        # TODO: Perform training.
-        # You should:
-        # - compute the predicted baseline using the baseline model,
-        # - train the policy model, using `returns` - `predicted_baseline` as
-        #   advantage estimate,
-        # - train the baseline model to predict `returns`.
-        #
-        # Note that predicting returns in 0-500 range is challenging for the network, given
-        # that the default initialization tries to keep variance -- it might be helpful for
-        # the network if you predict returns in a smaller range.
+        self._model.train()
+        states = states.permute(0, 3, 1, 2) # (B, H, W, C) -> (B, C, H, W)
 
-        states = states.permute(0, 3, 1, 2)
-       
-        self._policy.train()
-        self._value_net.train()
-        policy_logits = self._policy(states)
-        value_pred = self._value_net(states).squeeze(-1)
-        
-        # Normalize returns to help training stability
-        returns_normalized = (returns - returns.mean()) / (returns.std() + 1e-8)
-        
-        # Compute advantages
-        advantages = returns_normalized - value_pred.detach()
-        
-        # Policy loss (REINFORCE with baseline)
-        log_probs = torch.nn.functional.log_softmax(policy_logits, dim=-1)
-        selected_log_probs = log_probs.gather(1, actions.unsqueeze(1)).squeeze(1)
-        policy_loss = -(selected_log_probs * advantages).mean()
-        
-        # Value loss
-        value_loss = torch.nn.functional.mse_loss(value_pred, returns_normalized)
-        
-        # Update policy network
-        self._policy_optimizer.zero_grad()
-        policy_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self._policy.parameters(), max_norm=1.0)
-        self._policy_optimizer.step()
-        
-        # Update value network
-        self._value_optimizer.zero_grad()
-        value_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self._value_net.parameters(), max_norm=1.0)
-        self._value_optimizer.step()
+        # --- REFACTORED: Single forward pass ---
+        policy_logits, value_pred = self._model(states)
+
+        # Value loss (critic loss)
+        value_loss = self._mse_loss_fn(value_pred, returns)
+
+        # Policy loss (actor loss)
+        advantage = (returns - value_pred).detach() # .detach() is CRITICAL
+        policy_loss = self._ce_loss_fn(policy_logits, actions)
+        actor_loss = torch.mean(policy_loss * advantage)
+
+        # Total loss
+        # A common practice is to scale the value loss. 0.5 is a standard coefficient.
+        loss = actor_loss + value_loss
+
+        self._optimizer.zero_grad()
+        loss.backward()
+        # Optional: Gradient clipping for stability
+        torch.nn.utils.clip_grad_norm_(self._model.parameters(), max_norm=0.5)
+        self._optimizer.step()
 
     @npfl138.rl_utils.typed_torch_function(device, torch.float32)
     def predict(self, states: torch.Tensor) -> np.ndarray:
-        # TODO(reinforce): Define the prediction method returning policy probabilities.
-        self._policy.eval()
-        states = states.unsqueeze(0)
-        #print(states.shape)
-        states = states.permute(0,3, 1, 2)
-        logits = self._policy(states)
-        return torch.nn.Softmax(dim=1)(self._policy(states))
+        self._model.eval()
+        states = states.unsqueeze(0).permute(0, 3, 1, 2) # (B, H, W, C) -> (B, C, H, W)
+        
+        # We only need the policy logits for prediction
+        policy_logits, _ = self._model(states)
+        return torch.nn.Softmax(dim=1)(policy_logits)
 
 
 def main(env: npfl138.rl_utils.EvaluationEnv, args: argparse.Namespace) -> None:
@@ -158,11 +154,10 @@ def main(env: npfl138.rl_utils.EvaluationEnv, args: argparse.Namespace) -> None:
     npfl138.global_keras_initializers()
 
     # Assuming you have pre-trained your agent locally, perform only evaluation in ReCodEx
+    agent = Agent(env, args)
     if args.recodex:
         # TODO: Load the agent.
-        agent = Agent(env, args)
         agent.load(args.model_path)
-
         # Final evaluation.
         while True:
             state, done = env.reset(start_evaluation=True)[0], False
@@ -171,10 +166,6 @@ def main(env: npfl138.rl_utils.EvaluationEnv, args: argparse.Namespace) -> None:
                 action = np.argmax(agent.predict(state))
                 state, reward, terminated, truncated, _ = env.step(action)
                 done = terminated or truncated
-
-    # TODO: Perform training
-    # Construct the agent.
-    agent = Agent(env, args)
 
     # Training
     for _ in range(args.episodes // args.batch_size):
@@ -187,10 +178,8 @@ def main(env: npfl138.rl_utils.EvaluationEnv, args: argparse.Namespace) -> None:
                 # TODO(reinforce): Choose `action` according to probabilities
                 # distribution (see `np.random.choice`), which you
                 # can compute using `agent.predict` and current `state`.
-                #state = state.transpose(2,0,1)[None,...]
-                
-                actions_probs = agent.predict(state)[0]
-                action = np.random.choice(2,1,p=actions_probs)[0]
+                action_probs = agent.predict(state)[0]
+                action = np.random.choice(env.action_space.n, p=action_probs)
 
                 next_state, reward, terminated, truncated, _ = env.step(action)
                 done = terminated or truncated
@@ -214,9 +203,8 @@ def main(env: npfl138.rl_utils.EvaluationEnv, args: argparse.Namespace) -> None:
         batch_states = np.concatenate(batch_states)
         batch_returns = np.concatenate(batch_returns)
         agent.train(batch_states,batch_actions,batch_returns)
-    agent.save(args.model_path)
+
     # Final evaluation
-    
     while True:
         state, done = env.reset(start_evaluation=True)[0], False
         while not done:

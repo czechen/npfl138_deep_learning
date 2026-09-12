@@ -23,7 +23,6 @@ parser.add_argument("--dropout", default=0.3, type=float, help="Dropout")
 parser.add_argument("--rnn_dim", default=256, type=int, help="RNN layer dimension.")
 parser.add_argument("--res_blocks", default=4, type=int, help="Number of ResiudalBlocks to use")
 parser.add_argument("--cnn_dim", default=32, type=int, help="CNN channels to use in ResiudalBlocks")
-parser.add_argument("--cuda", default=False,type=bool,help = "True when training on gpu" )
 
 class ResiudalBlock(torch.nn.Module):
     def __init__(self,in_channels):
@@ -58,23 +57,6 @@ class Model(npfl138.TrainableModule):
     def __init__(self, args: argparse.Namespace) -> None:
         super().__init__()
         # TODO: Define the model.
-        if args.cuda:
-            self._CTCDecoder = torchaudio.models.decoder.cuda_ctc_decoder(
-                tokens=HOMRDataset.MARK_NAMES,
-                nbest=1,
-                beam_size=10,
-                blank_skip_threshold=0.95,
-                blank_id=0
-            )
-        else:
-            self._CTCDecoder = torchaudio.models.decoder.ctc_decoder(
-                lexicon=None,
-                tokens=HOMRDataset.MARK_NAMES,  
-                nbest=1,
-                beam_size=10,
-                blank_token=HOMRDataset.MARK_NAMES[0],
-                sil_token=HOMRDataset.MARK_NAMES[0],
-            )
         self._args = args
         self._blank_token = 0
         self._CTCloss = torch.nn.CTCLoss(blank = 0,reduction='none')
@@ -98,15 +80,32 @@ class Model(npfl138.TrainableModule):
             images = resblock(images)
         images = torch.permute(images,(0,3,1,2))
         images = images.reshape(images.shape[0],images.shape[1],images.shape[2]*images.shape[3])
-        first,_ = self._initial_LSTM_bidir(images)
-        first = first[...,0:self._args.rnn_dim] + first[...,self._args.rnn_dim:] 
+        seq_lengths = torch.round(images_lenghts / 16).to(torch.int)
+          
+        # Pack the sequence
+        packed_images = torch.nn.utils.rnn.pack_padded_sequence(
+            images, seq_lengths.cpu(), batch_first=True, enforce_sorted=False
+        )
+    
+        # Process with LSTMs
+        packed_first, _ = self._initial_LSTM_bidir(packed_images)
+        # Unpack to add residual connections
+        first, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_first, batch_first=True)
+        first = first[..., 0:self._args.rnn_dim] + first[..., self._args.rnn_dim:]
         first_drop = self._dropout(first)
 
-        hidden1, _ = self._LSTM_1(first_drop)
-        hidden1 = hidden1[...,0:self._args.rnn_dim] + hidden1[...,self._args.rnn_dim:] 
+        # Pack again for second LSTM
+        packed_first_drop = torch.nn.utils.rnn.pack_padded_sequence(
+            first_drop, seq_lengths.cpu(), batch_first=True, enforce_sorted=False
+        )
+        packed_hidden1, _ = self._LSTM_1(packed_first_drop)
+        hidden1, _ = torch.nn.utils.rnn.pad_packed_sequence(packed_hidden1, batch_first=True)
+ 
+        hidden1 = hidden1[..., 0:self._args.rnn_dim] + hidden1[..., self._args.rnn_dim:]
         hidden1 = self._dropout(hidden1) + first_drop
-        return self._output_layer(hidden1)
     
+        return self._output_layer(hidden1)
+
     def compute_loss(self, y_pred: torch.Tensor, y_true: torch.Tensor,*xs: tuple[torch.Tensor]) -> torch.Tensor:
         targets,target_lengths = y_true
         y_pred = torch.swapaxes(y_pred,0,1)
@@ -116,22 +115,35 @@ class Model(npfl138.TrainableModule):
         return torch.mean(loss)
 
     def ctc_decoding(self, y_pred: torch.Tensor, *xs: tuple[torch.Tensor]) -> list[torch.Tensor]:
-        _,input_lengths = xs
-        tokens_batch = []
-        results = self._CTCDecoder(y_pred,input_lengths)
+        # Simple greedy decoding
+        _, input_lengths = xs
+        input_lengths = torch.round(input_lengths/16).to(torch.int)
+        predictions = []
         for i in range(y_pred.shape[0]):
-            tokens_batch.append(results[i][0].tokens)
-        print(tokens_batch)
-        return tokens_batch
+            # Get the most likely class at each timestep
+            pred = torch.argmax(y_pred[i], dim=-1)
+            
+            # Truncate to actual length
+            pred = pred[:input_lengths[i]]
+            # Remove consecutive duplicates and blank tokens
+            decoded = []
+            prev_token = None
+            for token in pred:
+                if token != self._blank_token and token != prev_token:
+                    decoded.append(token)
+                prev_token = token
+            
+            predictions.append(decoded)
+        return predictions
 
     def compute_metrics(
         self, y_pred: torch.Tensor, y_true: torch.Tensor, *xs: tuple[torch.Tensor]
     ) -> dict[str, torch.Tensor]:
         # TODO: Compute predictions using the `ctc_decoding`. Consider computing it
         # only when `self.training==False` to speed up training.
-        if not self.training:
-            predictions = self.ctc_decoding(y_pred,*xs)
-            self.metrics["edit_distance"].update(predictions, y_true[0])
+#        if not self.training:
+        predictions = self.ctc_decoding(y_pred,*xs)
+        self.metrics["edit_distance"].update(predictions, y_true[0])
         return {name: metric.compute() for name, metric in self.metrics.items()}
 
     def predict_step(self, xs, as_numpy=True):
@@ -194,18 +206,14 @@ def main(args: argparse.Namespace) -> None:
     # Using `decode_on_demand=True` loads just the raw dataset (~500MB of undecoded PNG images)
     # and then decodes them on every access. Using `decode_on_demand=False` decodes the images
     # during loading, resulting in much faster access, but requires ~5GB of memory.
-    homr = HOMRDataset(decode_on_demand=True)
+    homr = HOMRDataset(decode_on_demand=False)
 
     train = TrainableDataset(homr.train,preprocessing=_preprocessing).dataloader(args.batch_size, shuffle=True)
     dev = TrainableDataset(homr.dev,preprocessing=_preprocessing).dataloader(args.batch_size)
     test = TrainableDataset(homr.test,preprocessing=_preprocessing).dataloader(args.batch_size)
+
     # TODO: Create the model and train it
     model = Model(args)
-    
-    for batch in test:
-        print(batch[0][0][1])
-        print(batch[1])
-        break
 
     _optimizer = torch.optim.Adam(model.parameters(),lr=0.001)
 
@@ -217,6 +225,7 @@ def main(args: argparse.Namespace) -> None:
             metrics={"edit_distance": homr.EditDistanceMetric(ignore_index=0)},
             logdir=args.logdir
         )  
+    model.to('cuda')
     logs = model.fit(train, dev=dev, epochs=args.epochs)
     # Generate test set annotations, but in `args.logdir` to allow parallel execution.
     os.makedirs(args.logdir, exist_ok=True)

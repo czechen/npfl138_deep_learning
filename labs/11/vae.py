@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/czechen/Projects/Deep_Learning/NPFL/bin/python3
 import argparse
 import datetime
 import os
@@ -52,7 +52,15 @@ class VAE(npfl138.TrainableModule):
         #   the `z_mean` and then the logarithm of `z_sd`.
         # You can use lazy layer or regular layers, but you should use them consistently;
         # so either all your layers should be lazy, or all of them should be regular.
-        self.encoder = ...
+        self.encoder = torch.nn.Sequential(
+                torch.nn.Flatten(),
+                torch.nn.Linear(MNIST.C * MNIST.H * MNIST.W,args.encoder_layers[0]),
+                torch.nn.ReLU(),
+                *[torch.nn.Sequential(
+                    torch.nn.Linear(args.encoder_layers[i-1],args.encoder_layers[i]),
+                    torch.nn.ReLU()) for i in range(1,len(args.encoder_layers))],
+                torch.nn.Linear(args.encoder_layers[-1],2*args.z_dim))
+
 
         # TODO: Define `self.decoder` as a `torch.nn.Sequential`, which
         # - takes vectors of `[args.z_dim]` shape on input;
@@ -61,39 +69,50 @@ class VAE(npfl138.TrainableModule):
         # - applies output dense layer with `MNIST.C * MNIST.H * MNIST.W` units
         #   and sigmoid activation;
         # - uses `torch.nn.Unflatten` to reshape the output to `[MNIST.C, MNIST.H, MNIST.W]`.
-        self.decoder = ...
+        self.decoder = torch.nn.Sequential(
+                torch.nn.Linear(args.z_dim,args.decoder_layers[0]),
+                torch.nn.ReLU(),
+                *[torch.nn.Sequential(
+                    torch.nn.Linear(args.decoder_layers[i-1],args.decoder_layers[i]),
+                    torch.nn.ReLU()) for i in range(1,len(args.decoder_layers))],
+                torch.nn.Linear(args.decoder_layers[-1],MNIST.C * MNIST.H * MNIST.W),
+                torch.nn.Sigmoid(),
+                torch.nn.Unflatten(1,[MNIST.C, MNIST.H, MNIST.W]))
 
     def train_step(self, xs: tuple[torch.Tensor], y: torch.Tensor) -> dict[str, torch.Tensor]:
         images = xs[0]
-
+        batch_size = images.shape[0]
         # TODO: Compute `z_mean` and `z_sd` of the given images using `self.encoder`.
         # The `z_mean` is the first half of the output of the encoder; the `z_sd`
         # is the second half of the output of the encoder passed through `torch.exp`.
-
+        z = self.encoder(images)
+        z_mean = z[:,:self._z_dim]
+        z_sd = torch.exp(z[:,self._z_dim:])
         # TODO: Sample `z` from a Normal distribution with mean `z_mean` and
         # standard deviation `z_sd`. Start by creating corresponding
         # distribution `torch.distributions.Normal(...)` and then run the
         # `rsample()` method. The `rsample()` method performs sampling using
         # the reparametrization trick, or fails when it is not supported
         # by the distribution.
-
+        normal = torch.distributions.Normal(z_mean,z_sd)
+        z_sample = normal.rsample()
         # TODO: Decode images using the sampled `z`.
-
+        decoded = self.decoder(z_sample)
         # TODO: Compute `reconstruction_loss` using an appropriate loss from `torch.nn.functional`.
-        reconstruction_loss = ...
+        reconstruction_loss = torch.nn.functional.binary_cross_entropy(decoded,images)
 
         # TODO: Compute `latent_loss` as a mean of KL divergences of suitable distributions.
         # Note that PyTorch offers `torch.distributions.kl.kl_divergence` computing
         # the exact KL divergence of two given distributions.
-        latent_loss = ...
-
+        latent_loss = torch.distributions.kl.kl_divergence(normal, self._z_prior()).mean()
         # TODO: Compute `loss` as a sum of the `reconstruction_loss` (multiplied by the number
         # of pixels in an image) and the `latent_loss` (multiplied by self._z_dim).
-        loss = ...
-
+        loss = reconstruction_loss*(MNIST.W*MNIST.H) + latent_loss*self._z_dim
         # TODO: Perform a single step of the `self.optimizer` (both encoder and
         # decoder parameters should be updated).
-        ...
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
 
         # Return the mean of the overall loss, and the current reconstruction and latent losses.
         loss = self.loss_tracker(loss)

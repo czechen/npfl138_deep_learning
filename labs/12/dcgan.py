@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/czechen/Projects/Deep_Learning/NPFL/bin/python3
 import argparse
 import datetime
 import os
@@ -56,7 +56,21 @@ class GAN(npfl138.TrainableModule):
         # Pass epsilon of 0.01 to all batch normalizations for better stability.
         # Moreover, on the lecture we discussed that the layers before batch normalization
         # should not use bias, so do not forget to set `bias=False` on all such layers.
-        self.generator = ...
+        self.generator = torch.nn.Sequential(
+                torch.nn.Linear(args.z_dim,1024,bias=False),
+                torch.nn.BatchNorm1d(1024,eps=0.01),
+                torch.nn.ReLU(),
+                torch.nn.Linear(1024,64 * MNIST.H // 4 * MNIST.W // 4,bias=False),
+                torch.nn.BatchNorm1d(64 * MNIST.H // 4 * MNIST.W // 4,eps=0.01),
+                torch.nn.ReLU(),
+                torch.nn.Unflatten(1,[64, MNIST.H // 4, MNIST.W // 4]),
+                torch.nn.ConvTranspose2d(64,32,kernel_size=4,stride=2,padding=1,bias=False),
+                torch.nn.BatchNorm2d(32,eps=0.01),
+                torch.nn.ReLU(),
+                torch.nn.ConvTranspose2d(32,MNIST.C,kernel_size=4,stride=2,padding=1),
+                torch.nn.Sigmoid()
+                )
+
 
         # TODO: Define `self.discriminator` as a `torch.nn.Sequential`, which
         # - takes input images with shape `[MNIST.C, MNIST.H, MNIST.W]`;
@@ -71,7 +85,23 @@ class GAN(npfl138.TrainableModule):
         # - applies output dense layer with one output and a suitable activation function.
         #
         # Again, pass epsilon of 0.01 to all batchnorms and use `bias=False` where appropriate.
-        self.discriminator = ...
+        self.discriminator = torch.nn.Sequential(
+                torch.nn.Conv2d(MNIST.C,32,kernel_size=5,stride=1,padding='same',bias=False),
+                torch.nn.BatchNorm2d(32,eps=0.01),
+                torch.nn.ReLU(),
+                torch.nn.MaxPool2d(kernel_size=2,stride=2), 
+                torch.nn.Conv2d(32,64,kernel_size=5,stride=1,padding='same',bias=False),
+                torch.nn.BatchNorm2d(64,eps=0.01),
+                torch.nn.ReLU(),
+                torch.nn.MaxPool2d(kernel_size=2,stride=2), 
+                torch.nn.Flatten(),
+                torch.nn.Linear(64 * MNIST.H // 4 * MNIST.W // 4,1024,bias=False),
+                torch.nn.BatchNorm1d(1024,eps=0.01),
+                torch.nn.ReLU(),
+                torch.nn.Linear(1024,1),
+                torch.nn.Sigmoid())
+
+
 
     def train_step(self, xs: tuple[torch.Tensor], y: torch.Tensor) -> dict[str, torch.Tensor]:
         images = xs[0]
@@ -84,7 +114,16 @@ class GAN(npfl138.TrainableModule):
         #   even if not updating its parameters, we want to perform possible BatchNorm in it);
         # - compute `generator_loss` using `self.loss`, with ones as target labels.
         # Then, perform a step of the generator optimizer stored in `self.optimizer["generator"]`.
-        ...
+        
+        prior = self._z_prior().sample((images.shape[0],))
+        generated = self.generator(prior)
+        #self.discriminator.training() #necessary?
+        discriminated = self.discriminator(generated)
+        generator_loss = self.loss(discriminated.squeeze(1),torch.ones(images.shape[0]))
+        self.optimizer["generator"].zero_grad()
+        generator_loss.backward()
+        self.optimizer["generator"].step()
+
 
         # TODO(gan): Train the discriminator:
         # - first run the discriminator on `images`, storing the results in `discriminated_real`;
@@ -95,12 +134,18 @@ class GAN(npfl138.TrainableModule):
         #   - `self.loss` on `discriminated_real` with suitable targets,
         #   - `self.loss` on `discriminated_fake` with suitable targets.
         # Then, perform a step of the discriminator optimizer stored in `self.optimizer["discriminator"]`.
-        ...
+        discriminated_real = self.discriminator(images)
+        discriminated_fake = self.discriminator(generated.detach())
+        discriminator_loss = self.loss(discriminated_real.squeeze(1),torch.ones(images.shape[0])) + self.loss(discriminated_fake.squeeze(1),torch.zeros(images.shape[0])) 
+        self.optimizer["discriminator"].zero_grad()
+        discriminator_loss.backward()
+        self.optimizer["discriminator"].step()
 
         # TODO(gan): Update the discriminator accuracy metric -- call the
         # `self.metrics["discriminator_accuracy"].update` twice, with the same
         # arguments the `self.loss` was called during discriminator loss computation.
-        ...
+        self.metrics["discriminator_accuracy"].update(discriminated_real.squeeze(1),torch.ones(images.shape[0]))
+        self.metrics["discriminator_accuracy"].update(discriminated_fake.squeeze(1),torch.zeros(images.shape[0]))
 
         # Return the mean of the overall loss, the current discriminator and generator losses, and the metrics.
         loss = self.loss_tracker(discriminator_loss + generator_loss)
@@ -159,11 +204,11 @@ def main(args: argparse.Namespace) -> dict[str, float]:
     # and the loss function and metric for the discriminator.
     model.configure(
         optimizer={
-            "discriminator": ...,
-            "generator": ...,
+            "discriminator": torch.optim.Adam(model.discriminator.parameters()),
+            "generator": torch.optim.Adam(model.generator.parameters()),
         },
-        loss=...,
-        metrics={"discriminator_accuracy": ...},
+        loss=torch.nn.BCELoss(),
+        metrics={"discriminator_accuracy": torchmetrics.Accuracy(task = 'binary',threshold = 0.5)},
         logdir=args.logdir,
     )
 
